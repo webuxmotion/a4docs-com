@@ -16,12 +16,12 @@ export default function Header() {
           </Link>
 
           {/* Add doc button */}
-          <button className="flex items-center gap-3 text-white text-sm font-medium">
-            Add doc
+          <Link href="/create" className="flex items-center gap-3 text-white text-sm font-medium">
+            Create PDF
             <span className="flex h-10 w-10 items-center justify-center rounded-full bg-accent text-primary font-bold text-2xl">
               +
             </span>
-          </button>
+          </Link>
 
           {/* Log In button */}
           <Link
