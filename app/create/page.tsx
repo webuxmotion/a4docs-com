@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { jsPDF } from 'jspdf';
 import Link from 'next/link';
+import { useAuth } from '@/contexts/AuthContext';
 
 type BlockType = 'text' | 'image';
 
@@ -10,11 +11,13 @@ interface Block {
   id: string;
   type: BlockType;
   content: string;
-  x: number; // percentage from left
-  y: number; // percentage from top
-  width: number; // percentage width
-  height: number; // percentage height
-  aspectRatio?: number; // original image width/height ratio
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  aspectRatio?: number;
+  fontSize?: number;
+  isBold?: boolean;
 }
 
 interface Document {
@@ -25,27 +28,34 @@ interface Document {
   updatedAt: number;
 }
 
-const A4_RATIO = 297 / 210; // height / width
+const A4_RATIO = 297 / 210;
 const STORAGE_KEY = 'a4docs_documents';
 
-// Helper functions for localStorage
-const getDocuments = (): Document[] => {
+// Helper functions for localStorage (for non-logged in users)
+const getLocalDocuments = (): Document[] => {
   if (typeof window === 'undefined') return [];
   const stored = localStorage.getItem(STORAGE_KEY);
   return stored ? JSON.parse(stored) : [];
 };
 
-const saveDocuments = (docs: Document[]) => {
+const saveLocalDocuments = (docs: Document[]) => {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(docs));
 };
 
+const clearLocalDocuments = () => {
+  localStorage.removeItem(STORAGE_KEY);
+};
+
 export default function CreateDocPage() {
+  const { user, token } = useAuth();
+
   const [documentId, setDocumentId] = useState<string | null>(null);
   const [documentTitle, setDocumentTitle] = useState('Untitled Document');
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [savedDocuments, setSavedDocuments] = useState<Document[]>([]);
   const [showDocumentsList, setShowDocumentsList] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
@@ -55,50 +65,154 @@ export default function CreateDocPage() {
   const [resizeDirection, setResizeDirection] = useState<string | null>(null);
   const [mouseDownPos, setMouseDownPos] = useState<{ x: number; y: number } | null>(null);
   const [pendingDragBlockId, setPendingDragBlockId] = useState<string | null>(null);
+  const [hasSynced, setHasSynced] = useState(false);
 
   const canvasRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
 
-  // Load documents from localStorage on mount
-  useEffect(() => {
-    setSavedDocuments(getDocuments());
-  }, []);
-
-  // Save document function
-  const saveDocument = () => {
-    setIsSaving(true);
-    const now = Date.now();
-    const docs = getDocuments();
-
-    if (documentId) {
-      // Update existing document
-      const index = docs.findIndex(d => d.id === documentId);
-      if (index !== -1) {
-        docs[index] = {
-          ...docs[index],
-          title: documentTitle,
-          blocks,
-          updatedAt: now,
-        };
+  // Fetch documents from MongoDB API
+  const fetchDocumentsFromAPI = useCallback(async () => {
+    if (!token) return [];
+    try {
+      const response = await fetch('/api/documents', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (response.ok) {
+        return await response.json();
       }
-    } else {
-      // Create new document
-      const newId = now.toString();
-      const newDoc: Document = {
-        id: newId,
-        title: documentTitle,
-        blocks,
-        createdAt: now,
-        updatedAt: now,
-      };
-      docs.unshift(newDoc);
-      setDocumentId(newId);
+    } catch (error) {
+      console.error('Error fetching documents:', error);
+    }
+    return [];
+  }, [token]);
+
+  // Sync local documents to MongoDB when user logs in
+  const syncLocalDocumentsToAPI = useCallback(async () => {
+    if (!token || hasSynced) return;
+
+    const localDocs = getLocalDocuments();
+    if (localDocs.length === 0) {
+      setHasSynced(true);
+      return;
     }
 
-    saveDocuments(docs);
-    setSavedDocuments(docs);
-    setLastSaved(new Date());
+    try {
+      const response = await fetch('/api/documents', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(localDocs),
+      });
+
+      if (response.ok) {
+        // Clear local storage after successful sync
+        clearLocalDocuments();
+        setHasSynced(true);
+      }
+    } catch (error) {
+      console.error('Error syncing documents:', error);
+    }
+  }, [token, hasSynced]);
+
+  // Load documents based on auth state
+  const loadDocuments = useCallback(async () => {
+    setIsLoading(true);
+    if (user && token) {
+      // First sync any local documents
+      await syncLocalDocumentsToAPI();
+      // Then fetch from API
+      const docs = await fetchDocumentsFromAPI();
+      setSavedDocuments(docs);
+    } else {
+      // Load from localStorage
+      setSavedDocuments(getLocalDocuments());
+    }
+    setIsLoading(false);
+  }, [user, token, fetchDocumentsFromAPI, syncLocalDocumentsToAPI]);
+
+  // Load documents on mount and when auth changes
+  useEffect(() => {
+    loadDocuments();
+  }, [loadDocuments]);
+
+  // Save document function
+  const saveDocument = async () => {
+    setIsSaving(true);
+
+    if (user && token) {
+      // Save to MongoDB
+      try {
+        if (documentId) {
+          // Update existing document
+          const response = await fetch('/api/documents', {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({ id: documentId, title: documentTitle, blocks }),
+          });
+
+          if (response.ok) {
+            const updatedDoc = await response.json();
+            setSavedDocuments(docs =>
+              docs.map(d => d.id === documentId ? updatedDoc : d)
+            );
+            setLastSaved(new Date());
+          }
+        } else {
+          // Create new document
+          const response = await fetch('/api/documents', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({ title: documentTitle, blocks }),
+          });
+
+          if (response.ok) {
+            const newDoc = await response.json();
+            setDocumentId(newDoc.id);
+            setSavedDocuments(docs => [newDoc, ...docs]);
+            setLastSaved(new Date());
+          }
+        }
+      } catch (error) {
+        console.error('Error saving document:', error);
+        alert('Error saving document. Please try again.');
+      }
+    } else {
+      // Save to localStorage
+      const now = Date.now();
+      const docs = getLocalDocuments();
+
+      if (documentId) {
+        const index = docs.findIndex(d => d.id === documentId);
+        if (index !== -1) {
+          docs[index] = { ...docs[index], title: documentTitle, blocks, updatedAt: now };
+        }
+      } else {
+        const newId = now.toString();
+        const newDoc: Document = {
+          id: newId,
+          title: documentTitle,
+          blocks,
+          createdAt: now,
+          updatedAt: now,
+        };
+        docs.unshift(newDoc);
+        setDocumentId(newId);
+      }
+
+      saveLocalDocuments(docs);
+      setSavedDocuments(docs);
+      setLastSaved(new Date());
+    }
+
     setIsSaving(false);
   };
 
@@ -109,6 +223,7 @@ export default function CreateDocPage() {
     setBlocks(doc.blocks);
     setShowDocumentsList(false);
     setSelectedBlockId(null);
+    setLastSaved(null);
   };
 
   // Create new document
@@ -122,12 +237,32 @@ export default function CreateDocPage() {
   };
 
   // Delete document
-  const deleteDocument = (docId: string) => {
-    const docs = getDocuments().filter(d => d.id !== docId);
-    saveDocuments(docs);
-    setSavedDocuments(docs);
-    if (documentId === docId) {
-      createNewDocument();
+  const deleteDocument = async (docId: string) => {
+    if (user && token) {
+      // Delete from MongoDB
+      try {
+        const response = await fetch(`/api/documents?id=${docId}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        if (response.ok) {
+          setSavedDocuments(docs => docs.filter(d => d.id !== docId));
+          if (documentId === docId) {
+            createNewDocument();
+          }
+        }
+      } catch (error) {
+        console.error('Error deleting document:', error);
+      }
+    } else {
+      // Delete from localStorage
+      const docs = getLocalDocuments().filter(d => d.id !== docId);
+      saveLocalDocuments(docs);
+      setSavedDocuments(docs);
+      if (documentId === docId) {
+        createNewDocument();
+      }
     }
   };
 
@@ -140,6 +275,8 @@ export default function CreateDocPage() {
       y: blocks.length * 15 + 5,
       width: type === 'text' ? 80 : 40,
       height: type === 'text' ? 10 : 20,
+      fontSize: type === 'text' ? 14 : undefined,
+      isBold: type === 'text' ? false : undefined,
     };
 
     setBlocks([...blocks, newBlock]);
@@ -178,10 +315,7 @@ export default function CreateDocPage() {
       y: e.clientY - rect.top - blockY,
     });
 
-    // Select immediately on click
     setSelectedBlockId(blockId);
-
-    // Store mouse position to detect drag start
     setMouseDownPos({ x: e.clientX, y: e.clientY });
     setPendingDragBlockId(blockId);
   };
@@ -190,7 +324,6 @@ export default function CreateDocPage() {
     if (!canvasRef.current) return;
     const rect = canvasRef.current.getBoundingClientRect();
 
-    // Start drag only after moving a threshold distance
     if (pendingDragBlockId && mouseDownPos && !isDragging) {
       const dx = Math.abs(e.clientX - mouseDownPos.x);
       const dy = Math.abs(e.clientY - mouseDownPos.y);
@@ -206,7 +339,6 @@ export default function CreateDocPage() {
       const newX = ((e.clientX - rect.left - dragOffset.x) / rect.width) * 100;
       const newY = ((e.clientY - rect.top - dragOffset.y) / rect.height) * 100;
 
-      // Constrain to canvas bounds
       const constrainedX = Math.max(0, Math.min(100 - block.width, newX));
       const constrainedY = Math.max(0, Math.min(100 - block.height, newY));
 
@@ -225,7 +357,6 @@ export default function CreateDocPage() {
       let newX = block.x;
       let newY = block.y;
 
-      // For images, maintain aspect ratio
       const isImage = block.type === 'image' && block.aspectRatio;
 
       if (resizeDirection.includes('e')) {
@@ -245,34 +376,28 @@ export default function CreateDocPage() {
         newY = Math.min(block.y + block.height - 3, mouseY);
       }
 
-      // Maintain aspect ratio for images
       if (isImage && block.aspectRatio) {
         const canvasWidth = rect.width;
         const canvasHeight = rect.height;
 
-        // Determine which dimension changed more
         const widthChanged = resizeDirection.includes('e') || resizeDirection.includes('w');
         const heightChanged = resizeDirection.includes('n') || resizeDirection.includes('s');
 
         if (widthChanged && !heightChanged) {
-          // Width changed, adjust height to maintain ratio
           const widthPx = (newWidth / 100) * canvasWidth;
           const heightPx = widthPx / block.aspectRatio;
           newHeight = (heightPx / canvasHeight) * 100;
         } else if (heightChanged && !widthChanged) {
-          // Height changed, adjust width to maintain ratio
           const heightPx = (newHeight / 100) * canvasHeight;
           const widthPx = heightPx * block.aspectRatio;
           newWidth = (widthPx / canvasWidth) * 100;
         } else if (widthChanged && heightChanged) {
-          // Both changed (corner resize), use width as primary
           const widthPx = (newWidth / 100) * canvasWidth;
           const heightPx = widthPx / block.aspectRatio;
           newHeight = (heightPx / canvasHeight) * 100;
         }
       }
 
-      // Constrain to canvas
       newWidth = Math.min(newWidth, 100 - newX);
       newHeight = Math.min(newHeight, 100 - newY);
 
@@ -301,14 +426,11 @@ export default function CreateDocPage() {
       reader.onload = (event) => {
         const base64 = event.target?.result as string;
 
-        // Create an image to get dimensions
         const img = new window.Image();
         img.onload = () => {
           const aspectRatio = img.width / img.height;
           const block = blocks.find(b => b.id === activeBlockId);
           if (block && canvasRef.current) {
-            // Calculate proper height based on width and aspect ratio
-            // Account for A4 ratio in the calculation
             const canvasWidth = canvasRef.current.offsetWidth;
             const canvasHeight = canvasRef.current.offsetHeight;
             const blockWidthPx = (block.width / 100) * canvasWidth;
@@ -318,7 +440,7 @@ export default function CreateDocPage() {
             updateBlock(activeBlockId, {
               content: base64,
               aspectRatio,
-              height: Math.min(properHeightPercent, 100 - block.y) // Constrain to canvas
+              height: Math.min(properHeightPercent, 100 - block.y)
             });
           } else {
             updateBlock(activeBlockId, { content: base64, aspectRatio });
@@ -351,12 +473,7 @@ export default function CreateDocPage() {
     setIsGenerating(true);
 
     try {
-      const doc = new jsPDF({
-        orientation: 'portrait',
-        unit: 'mm',
-        format: 'a4',
-      });
-
+      const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
       const pageWidth = doc.internal.pageSize.getWidth();
       const pageHeight = doc.internal.pageSize.getHeight();
 
@@ -367,15 +484,23 @@ export default function CreateDocPage() {
         const height = (block.height / 100) * pageHeight;
 
         if (block.type === 'text' && block.content) {
-          doc.setFontSize(12);
-          doc.setFont('helvetica', 'normal');
+          // Convert px to pt (approximately 0.75 ratio) for better size matching
+          const fontSizePx = block.fontSize || 14;
+          const fontSizePt = fontSizePx * 0.75;
+          doc.setFontSize(fontSizePt);
+          doc.setFont('helvetica', block.isBold ? 'bold' : 'normal');
           doc.setTextColor(0, 0, 0);
 
-          const lines = doc.splitTextToSize(block.content, width);
-          doc.text(lines, x, y + 5);
+          // Account for padding (p-2 = 8px ≈ 2mm on each side)
+          const padding = 2;
+          const textWidth = width - (padding * 2);
+          const textX = x + padding;
+          const textY = y + padding + (fontSizePt * 0.35);
+
+          const lines = doc.splitTextToSize(block.content, textWidth);
+          doc.text(lines, textX, textY);
         } else if (block.type === 'image' && block.content) {
           try {
-            // Use the actual block dimensions as set by user
             doc.addImage(block.content, 'JPEG', x, y, width, height);
           } catch (imgError) {
             console.error('Error adding image to PDF:', imgError);
@@ -383,12 +508,11 @@ export default function CreateDocPage() {
         }
       }
 
-      // Add footer
       doc.setFontSize(8);
       doc.setTextColor(150, 150, 150);
       doc.text('Created with A4Docs', 10, pageHeight - 5);
 
-      doc.save('document.pdf');
+      doc.save(`${documentTitle || 'document'}.pdf`);
     } catch (error) {
       console.error('Error generating PDF:', error);
       alert('Error generating PDF. Please try again.');
@@ -397,11 +521,9 @@ export default function CreateDocPage() {
     }
   };
 
-  // Handle keyboard delete
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedBlockId) {
-        // Don't delete if we're in an input field
         if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).tagName === 'TEXTAREA') {
           return;
         }
@@ -415,7 +537,6 @@ export default function CreateDocPage() {
 
   return (
     <div className="min-h-screen bg-gray-100 flex flex-col">
-      {/* Hidden file input for image upload */}
       <input
         ref={fileInputRef}
         type="file"
@@ -435,7 +556,6 @@ export default function CreateDocPage() {
                 </span>
               </Link>
 
-              {/* Document title */}
               <input
                 type="text"
                 value={documentTitle}
@@ -449,10 +569,15 @@ export default function CreateDocPage() {
                   Saved {lastSaved.toLocaleTimeString()}
                 </span>
               )}
+
+              {user && (
+                <span className="text-white/40 text-xs bg-white/10 px-2 py-1 rounded">
+                  Cloud sync
+                </span>
+              )}
             </div>
 
             <div className="flex items-center gap-3">
-              {/* My Documents button */}
               <button
                 onClick={() => setShowDocumentsList(!showDocumentsList)}
                 className="flex items-center gap-2 px-4 py-2.5 bg-white/20 text-white font-medium rounded-full hover:bg-white/30 transition-colors"
@@ -463,7 +588,6 @@ export default function CreateDocPage() {
                 My Docs
               </button>
 
-              {/* Save button */}
               <button
                 onClick={saveDocument}
                 disabled={isSaving || blocks.length === 0}
@@ -482,7 +606,6 @@ export default function CreateDocPage() {
                 Save
               </button>
 
-              {/* Download PDF button */}
               <button
                 onClick={generatePDF}
                 disabled={isGenerating || blocks.length === 0}
@@ -513,13 +636,11 @@ export default function CreateDocPage() {
       {/* Documents Sidebar */}
       {showDocumentsList && (
         <div className="fixed inset-0 z-50 flex">
-          {/* Backdrop */}
           <div
             className="absolute inset-0 bg-black/50"
             onClick={() => setShowDocumentsList(false)}
           />
 
-          {/* Sidebar */}
           <div className="relative w-80 bg-white shadow-xl ml-auto h-full overflow-hidden flex flex-col">
             <div className="p-4 border-b border-gray-200 flex items-center justify-between">
               <h2 className="text-lg font-bold text-gray-900">My Documents</h2>
@@ -532,6 +653,17 @@ export default function CreateDocPage() {
                 </svg>
               </button>
             </div>
+
+            {user && (
+              <div className="px-4 py-2 bg-green-50 border-b border-green-100">
+                <p className="text-xs text-green-700 flex items-center gap-1">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15a4.5 4.5 0 004.5 4.5H18a3.75 3.75 0 001.332-7.257 3 3 0 00-3.758-3.848 5.25 5.25 0 00-10.233 2.33A4.502 4.502 0 002.25 15z" />
+                  </svg>
+                  Synced to cloud
+                </p>
+              </div>
+            )}
 
             <div className="p-4 border-b border-gray-200">
               <button
@@ -546,7 +678,15 @@ export default function CreateDocPage() {
             </div>
 
             <div className="flex-1 overflow-y-auto">
-              {savedDocuments.length === 0 ? (
+              {isLoading ? (
+                <div className="p-8 text-center">
+                  <svg className="animate-spin h-8 w-8 mx-auto text-primary" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                  <p className="mt-2 text-gray-500">Loading...</p>
+                </div>
+              ) : savedDocuments.length === 0 ? (
                 <div className="p-8 text-center text-gray-500">
                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1} stroke="currentColor" className="w-12 h-12 mx-auto mb-3 text-gray-300">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
@@ -565,9 +705,7 @@ export default function CreateDocPage() {
                     >
                       <div className="flex items-start justify-between">
                         <div className="flex-1 min-w-0" onClick={() => loadDocument(doc)}>
-                          <h3 className="font-medium text-gray-900 truncate">
-                            {doc.title}
-                          </h3>
+                          <h3 className="font-medium text-gray-900 truncate">{doc.title}</h3>
                           <p className="text-sm text-gray-500 mt-1">
                             {doc.blocks.length} block{doc.blocks.length !== 1 ? 's' : ''}
                           </p>
@@ -625,6 +763,52 @@ export default function CreateDocPage() {
             {selectedBlockId && (
               <>
                 <div className="w-px h-6 bg-gray-300 mx-2" />
+
+                {/* Text formatting controls */}
+                {blocks.find(b => b.id === selectedBlockId)?.type === 'text' && (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <label className="text-sm text-gray-500">Size:</label>
+                      <select
+                        value={blocks.find(b => b.id === selectedBlockId)?.fontSize || 14}
+                        onChange={(e) => updateBlock(selectedBlockId, { fontSize: parseInt(e.target.value) })}
+                        className="px-3 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors border-none outline-none cursor-pointer"
+                      >
+                        <option value={10}>10</option>
+                        <option value={12}>12</option>
+                        <option value={14}>14</option>
+                        <option value={16}>16</option>
+                        <option value={18}>18</option>
+                        <option value={20}>20</option>
+                        <option value={24}>24</option>
+                        <option value={28}>28</option>
+                        <option value={32}>32</option>
+                        <option value={36}>36</option>
+                        <option value={48}>48</option>
+                      </select>
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        const block = blocks.find(b => b.id === selectedBlockId);
+                        if (block) {
+                          updateBlock(selectedBlockId, { isBold: !block.isBold });
+                        }
+                      }}
+                      className={`flex items-center justify-center w-10 h-10 text-sm font-bold rounded-lg transition-colors ${
+                        blocks.find(b => b.id === selectedBlockId)?.isBold
+                          ? 'bg-primary text-white'
+                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      }`}
+                      title="Bold"
+                    >
+                      B
+                    </button>
+
+                    <div className="w-px h-6 bg-gray-300 mx-2" />
+                  </>
+                )}
+
                 <button
                   onClick={() => deleteBlock(selectedBlockId)}
                   className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-red-600 bg-red-50 rounded-lg hover:bg-red-100 transition-colors"
@@ -655,7 +839,6 @@ export default function CreateDocPage() {
           onMouseUp={handleMouseUp}
           onMouseLeave={handleMouseUp}
         >
-          {/* Grid pattern for visual guidance */}
           <div
             className="absolute inset-0 pointer-events-none opacity-10"
             style={{
@@ -664,7 +847,6 @@ export default function CreateDocPage() {
             }}
           />
 
-          {/* Blocks */}
           {blocks.map((block) => (
             <div
               key={block.id}
@@ -688,7 +870,15 @@ export default function CreateDocPage() {
             >
               {block.type === 'text' ? (
                 <div className="w-full h-full bg-yellow-50 border border-yellow-200 p-2 overflow-hidden pointer-events-none">
-                  <p className="text-sm text-gray-800 break-words">{block.content}</p>
+                  <p
+                    className="text-gray-800 break-words"
+                    style={{
+                      fontSize: `${block.fontSize || 14}px`,
+                      fontWeight: block.isBold ? 'bold' : 'normal',
+                    }}
+                  >
+                    {block.content}
+                  </p>
                 </div>
               ) : (
                 <div className="w-full h-full bg-gray-100 border border-gray-200 overflow-hidden flex items-center justify-center pointer-events-none">
@@ -716,49 +906,21 @@ export default function CreateDocPage() {
                 </div>
               )}
 
-              {/* Resize handles (only show when selected) */}
               {selectedBlockId === block.id && (
                 <>
-                  {/* Corner handles */}
-                  <div
-                    className="resize-handle absolute -top-2 -left-2 w-4 h-4 bg-primary border-2 border-white shadow-md rounded-sm cursor-nw-resize z-10"
-                    onMouseDown={(e) => handleResizeStart(e, 'nw')}
-                  />
-                  <div
-                    className="resize-handle absolute -top-2 -right-2 w-4 h-4 bg-primary border-2 border-white shadow-md rounded-sm cursor-ne-resize z-10"
-                    onMouseDown={(e) => handleResizeStart(e, 'ne')}
-                  />
-                  <div
-                    className="resize-handle absolute -bottom-2 -left-2 w-4 h-4 bg-primary border-2 border-white shadow-md rounded-sm cursor-sw-resize z-10"
-                    onMouseDown={(e) => handleResizeStart(e, 'sw')}
-                  />
-                  <div
-                    className="resize-handle absolute -bottom-2 -right-2 w-4 h-4 bg-primary border-2 border-white shadow-md rounded-sm cursor-se-resize z-10"
-                    onMouseDown={(e) => handleResizeStart(e, 'se')}
-                  />
-                  {/* Edge handles */}
-                  <div
-                    className="resize-handle absolute -top-2 left-1/2 -translate-x-1/2 w-4 h-4 bg-primary border-2 border-white shadow-md rounded-sm cursor-n-resize z-10"
-                    onMouseDown={(e) => handleResizeStart(e, 'n')}
-                  />
-                  <div
-                    className="resize-handle absolute -bottom-2 left-1/2 -translate-x-1/2 w-4 h-4 bg-primary border-2 border-white shadow-md rounded-sm cursor-s-resize z-10"
-                    onMouseDown={(e) => handleResizeStart(e, 's')}
-                  />
-                  <div
-                    className="resize-handle absolute top-1/2 -left-2 -translate-y-1/2 w-4 h-4 bg-primary border-2 border-white shadow-md rounded-sm cursor-w-resize z-10"
-                    onMouseDown={(e) => handleResizeStart(e, 'w')}
-                  />
-                  <div
-                    className="resize-handle absolute top-1/2 -right-2 -translate-y-1/2 w-4 h-4 bg-primary border-2 border-white shadow-md rounded-sm cursor-e-resize z-10"
-                    onMouseDown={(e) => handleResizeStart(e, 'e')}
-                  />
+                  <div className="resize-handle absolute -top-2 -left-2 w-4 h-4 bg-primary border-2 border-white shadow-md rounded-sm cursor-nw-resize z-10" onMouseDown={(e) => handleResizeStart(e, 'nw')} />
+                  <div className="resize-handle absolute -top-2 -right-2 w-4 h-4 bg-primary border-2 border-white shadow-md rounded-sm cursor-ne-resize z-10" onMouseDown={(e) => handleResizeStart(e, 'ne')} />
+                  <div className="resize-handle absolute -bottom-2 -left-2 w-4 h-4 bg-primary border-2 border-white shadow-md rounded-sm cursor-sw-resize z-10" onMouseDown={(e) => handleResizeStart(e, 'sw')} />
+                  <div className="resize-handle absolute -bottom-2 -right-2 w-4 h-4 bg-primary border-2 border-white shadow-md rounded-sm cursor-se-resize z-10" onMouseDown={(e) => handleResizeStart(e, 'se')} />
+                  <div className="resize-handle absolute -top-2 left-1/2 -translate-x-1/2 w-4 h-4 bg-primary border-2 border-white shadow-md rounded-sm cursor-n-resize z-10" onMouseDown={(e) => handleResizeStart(e, 'n')} />
+                  <div className="resize-handle absolute -bottom-2 left-1/2 -translate-x-1/2 w-4 h-4 bg-primary border-2 border-white shadow-md rounded-sm cursor-s-resize z-10" onMouseDown={(e) => handleResizeStart(e, 's')} />
+                  <div className="resize-handle absolute top-1/2 -left-2 -translate-y-1/2 w-4 h-4 bg-primary border-2 border-white shadow-md rounded-sm cursor-w-resize z-10" onMouseDown={(e) => handleResizeStart(e, 'w')} />
+                  <div className="resize-handle absolute top-1/2 -right-2 -translate-y-1/2 w-4 h-4 bg-primary border-2 border-white shadow-md rounded-sm cursor-e-resize z-10" onMouseDown={(e) => handleResizeStart(e, 'e')} />
                 </>
               )}
             </div>
           ))}
 
-          {/* Empty state */}
           {blocks.length === 0 && (
             <div className="absolute inset-0 flex items-center justify-center text-gray-400">
               <div className="text-center">
@@ -771,14 +933,12 @@ export default function CreateDocPage() {
             </div>
           )}
 
-          {/* Footer watermark */}
           <div className="absolute bottom-2 left-4 text-xs text-gray-300">
             Created with A4Docs
           </div>
         </div>
       </main>
 
-      {/* Help text */}
       <div className="bg-gray-100 py-4 text-center text-gray-500 text-sm">
         Drag elements freely • Double-click text to edit • Use handles to resize • Press Delete to remove
       </div>

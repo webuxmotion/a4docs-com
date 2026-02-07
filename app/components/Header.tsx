@@ -1,8 +1,11 @@
 'use client';
 
 import Link from 'next/link';
+import { useAuth } from '@/contexts/AuthContext';
 
 export default function Header() {
+  const { user, logout, isLoading } = useAuth();
+
   return (
     <header className="absolute top-0 left-0 right-0 z-10">
       <div className="flex h-20 items-center">
@@ -23,13 +26,29 @@ export default function Header() {
             </span>
           </Link>
 
-          {/* Log In button */}
-          <Link
-            href="/login"
-            className="rounded-full bg-accent px-8 py-3 text-sm font-medium text-primary hover:bg-accent-dark transition-colors"
-          >
-            Log In
-          </Link>
+          {/* Auth buttons */}
+          {isLoading ? (
+            <div className="w-20 h-10 bg-white/20 rounded-full animate-pulse" />
+          ) : user ? (
+            <div className="flex items-center gap-4">
+              <span className="text-white text-sm">
+                Hi, {user.name}
+              </span>
+              <button
+                onClick={logout}
+                className="rounded-full bg-white/20 px-6 py-2.5 text-sm font-medium text-white hover:bg-white/30 transition-colors"
+              >
+                Log Out
+              </button>
+            </div>
+          ) : (
+            <Link
+              href="/login"
+              className="rounded-full bg-accent px-8 py-3 text-sm font-medium text-primary hover:bg-accent-dark transition-colors"
+            >
+              Log In
+            </Link>
+          )}
         </div>
 
         {/* Right side - Gray/Image background area */}
