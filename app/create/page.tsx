@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { jsPDF } from 'jspdf';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
+import { loadFonts } from '@/lib/pdfFonts';
 
 type BlockType = 'text' | 'image';
 
@@ -474,6 +475,10 @@ export default function CreateDocPage() {
 
     try {
       const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+
+      // Load Roboto font with Cyrillic support
+      await loadFonts(doc);
+
       const pageWidth = doc.internal.pageSize.getWidth();
       const pageHeight = doc.internal.pageSize.getHeight();
 
@@ -488,7 +493,7 @@ export default function CreateDocPage() {
           const fontSizePx = block.fontSize || 14;
           const fontSizePt = fontSizePx * 0.75;
           doc.setFontSize(fontSizePt);
-          doc.setFont('helvetica', block.isBold ? 'bold' : 'normal');
+          doc.setFont('Roboto', block.isBold ? 'bold' : 'normal');
           doc.setTextColor(0, 0, 0);
 
           // Account for padding (p-2 = 8px ≈ 2mm on each side)
@@ -509,6 +514,7 @@ export default function CreateDocPage() {
       }
 
       doc.setFontSize(8);
+      doc.setFont('Roboto', 'normal');
       doc.setTextColor(150, 150, 150);
       doc.text('Created with A4Docs', 10, pageHeight - 5);
 
