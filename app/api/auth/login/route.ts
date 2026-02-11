@@ -28,12 +28,32 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Check if user has a password (not OAuth-only user)
+    if (!user.password) {
+      return NextResponse.json(
+        { error: 'This account uses Google sign-in. Please use the Google button to log in.' },
+        { status: 400 }
+      );
+    }
+
     // Verify password
     const isValidPassword = await verifyPassword(password, user.password);
     if (!isValidPassword) {
       return NextResponse.json(
         { error: 'Invalid email or password' },
         { status: 401 }
+      );
+    }
+
+    // Check email verification
+    if (!user.emailVerified) {
+      return NextResponse.json(
+        {
+          error: 'Please verify your email before logging in.',
+          requiresVerification: true,
+          email: user.email
+        },
+        { status: 403 }
       );
     }
 

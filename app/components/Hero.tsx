@@ -1,11 +1,14 @@
 'use client';
 
-import Image from 'next/image';
-import { useState } from 'react';
+import HeroSlider from './HeroSlider';
+
+const heroSlides = [
+  { src: '/hero-slide-1.png', alt: 'Create documents easily with A4Docs' },
+  { src: '/hero-slide-2.png', alt: 'Share documents with friends' },
+  { src: '/hero-slide-3.png', alt: 'Save the planet by going paperless' },
+];
 
 export default function Hero() {
-  const [imageError, setImageError] = useState(false);
-
   return (
     <section className="relative min-h-[700px] lg:min-h-[800px]">
       {/* Split background */}
@@ -16,38 +19,9 @@ export default function Hero() {
         <div className="w-[40%] bg-[#C8B6E2]"></div>
       </div>
 
-      {/* Hero Image - positioned from the top */}
+      {/* Hero Slider - positioned from the top */}
       <div className="absolute top-0 right-0 w-[45%] h-full">
-        {!imageError ? (
-          <Image
-            src="/hero-image.jpg"
-            alt="Happy person using A4Docs"
-            fill
-            className="object-cover object-top"
-            priority
-            onError={() => setImageError(true)}
-          />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center bg-white/20">
-            <div className="text-center text-primary/60">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-                strokeWidth={1}
-                stroke="currentColor"
-                className="w-24 h-24 mx-auto mb-4"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 0 0 1.5-1.5V6a1.5 1.5 0 0 0-1.5-1.5H3.75A1.5 1.5 0 0 0 2.25 6v12a1.5 1.5 0 0 0 1.5 1.5Zm10.5-11.25h.008v.008h-.008V8.25Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z"
-                />
-              </svg>
-              <p className="text-sm">Add hero-image.jpg to /public</p>
-            </div>
-          </div>
-        )}
+        <HeroSlider slides={heroSlides} />
       </div>
 
       {/* Main Heading */}

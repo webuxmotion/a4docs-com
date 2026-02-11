@@ -4,9 +4,19 @@ export interface User {
   _id?: ObjectId;
   email: string;
   name: string;
-  password: string;
+  password?: string; // Optional for OAuth users
   createdAt: Date;
   updatedAt: Date;
+
+  // Email verification
+  emailVerified: boolean;
+  emailVerificationToken?: string;
+  emailVerificationExpires?: Date;
+
+  // OAuth
+  authProvider: 'credentials' | 'google';
+  googleId?: string;
+  image?: string; // Profile picture from Google
 }
 
 export interface UserResponse {

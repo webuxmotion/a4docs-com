@@ -2,9 +2,11 @@
 
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
+import { useHeroSlider } from '@/contexts/HeroSliderContext';
 
 export default function Header() {
   const { user, logout, isLoading } = useAuth();
+  const { currentIndex, totalSlides, goToSlide } = useHeroSlider();
 
   return (
     <header className="absolute top-0 left-0 right-0 z-10">
@@ -59,12 +61,23 @@ export default function Header() {
             <span className="block h-0.5 w-6 bg-white"></span>
           </button>
 
-          {/* Dots indicator */}
-          <div className="flex items-center gap-2">
-            <span className="h-2.5 w-2.5 rounded-full bg-primary"></span>
-            <span className="h-2.5 w-2.5 rounded-full bg-accent"></span>
-            <span className="h-2.5 w-2.5 rounded-full bg-white"></span>
-          </div>
+          {/* Slider Dots indicator */}
+          {totalSlides > 1 && (
+            <div className="flex items-center gap-2">
+              {Array.from({ length: totalSlides }).map((_, index) => (
+                <button
+                  key={index}
+                  onClick={() => goToSlide(index)}
+                  className={`h-2.5 w-2.5 rounded-full transition-all duration-300 ${
+                    index === currentIndex
+                      ? 'bg-primary'
+                      : 'bg-primary/40 hover:bg-primary/60'
+                  }`}
+                  aria-label={`Go to slide ${index + 1}`}
+                />
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </header>

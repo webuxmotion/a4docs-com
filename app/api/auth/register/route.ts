@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDatabase } from '@/lib/mongodb';
-import { hashPassword, createToken } from '@/lib/auth';
-import { User, AuthResponse } from '@/lib/types';
+import { hashPassword } from '@/lib/auth';
+import { User } from '@/lib/types';
+import { generateVerificationToken, getVerificationExpiry } from '@/lib/verification';
+import { sendVerificationEmail } from '@/lib/email';
 
 export async function POST(request: NextRequest) {
   try {
@@ -35,37 +37,41 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Hash password and create user
+    // Hash password and create verification token
     const hashedPassword = await hashPassword(password);
+    const verificationToken = generateVerificationToken();
     const now = new Date();
 
     const newUser: User = {
       email: email.toLowerCase(),
       name,
       password: hashedPassword,
+      authProvider: 'credentials',
+      emailVerified: false,
+      emailVerificationToken: verificationToken,
+      emailVerificationExpires: getVerificationExpiry(),
       createdAt: now,
       updatedAt: now,
     };
 
-    const result = await usersCollection.insertOne(newUser);
+    await usersCollection.insertOne(newUser);
 
-    // Create token
-    const token = createToken({
-      id: result.insertedId.toString(),
-      email: newUser.email,
-      name: newUser.name,
-    });
+    // Send verification email
+    try {
+      await sendVerificationEmail(newUser.email, newUser.name, verificationToken);
+    } catch (emailError) {
+      console.error('Failed to send verification email:', emailError);
+      // Don't fail registration if email fails, user can resend
+    }
 
-    const response: AuthResponse = {
-      user: {
-        id: result.insertedId.toString(),
+    return NextResponse.json(
+      {
+        message: 'Registration successful. Please check your email to verify your account.',
         email: newUser.email,
-        name: newUser.name,
+        requiresVerification: true,
       },
-      token,
-    };
-
-    return NextResponse.json(response, { status: 201 });
+      { status: 201 }
+    );
   } catch (error) {
     console.error('Registration error:', error);
     return NextResponse.json(
