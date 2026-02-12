@@ -64,3 +64,15 @@ export interface DocumentResponse {
   createdAt: number;
   updatedAt: number;
 }
+
+// Signature placement on a specific PDF page
+export interface SignaturePlacement {
+  id: string;
+  pageNumber: number;          // 1-indexed page number
+  imageData: string;           // Base64 encoded signature image
+  x: number;                   // Position as percentage (0-100)
+  y: number;                   // Position as percentage (0-100)
+  width: number;               // Width as percentage
+  height: number;              // Height as percentage
+  aspectRatio: number;         // Original aspect ratio for maintaining proportions
+}
